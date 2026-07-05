@@ -1,60 +1,177 @@
+"""Analyze SSH-style authentication logs for defensive triage."""
+
+from __future__ import annotations
+
 import argparse
 import json
 import re
 from collections import Counter, defaultdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
-FAILED_RE = re.compile(r"Failed password for (?:invalid user )?(?P<user>\S+) from (?P<ip>\d+\.\d+\.\d+\.\d+)")
-ACCEPTED_RE = re.compile(r"Accepted \S+ for (?P<user>\S+) from (?P<ip>\d+\.\d+\.\d+\.\d+)")
+FAILED_RE = re.compile(
+    r"^(?P<timestamp>\w{3}\s+\d{1,2}\s+\d\d:\d\d:\d\d).*sshd\[\d+\]: "
+    r"Failed password for (?:(?P<invalid>invalid user)\s+)?(?P<user>\S+) "
+    r"from (?P<ip>\d+\.\d+\.\d+\.\d+)"
+)
+ACCEPTED_RE = re.compile(
+    r"^(?P<timestamp>\w{3}\s+\d{1,2}\s+\d\d:\d\d:\d\d).*sshd\[\d+\]: "
+    r"Accepted (?P<method>\S+) for (?P<user>\S+) from (?P<ip>\d+\.\d+\.\d+\.\d+)"
+)
 
 
-def parse_auth_log(lines: list[str], threshold: int = 5) -> dict:
+@dataclass(frozen=True)
+class AuthEvent:
+    timestamp: str
+    outcome: str
+    user: str
+    source_ip: str
+    method: str | None = None
+    invalid_user: bool = False
+
+
+@dataclass(frozen=True)
+class SuspiciousSource:
+    source_ip: str
+    failed_attempts: int
+    accepted_logins: int
+    targeted_users: list[str]
+    invalid_user_attempts: int
+    risk: str
+    reasons: list[str]
+
+
+def parse_line(line: str) -> AuthEvent | None:
+    failed = FAILED_RE.search(line)
+    if failed:
+        return AuthEvent(
+            timestamp=failed.group("timestamp"),
+            outcome="failed",
+            user=failed.group("user"),
+            source_ip=failed.group("ip"),
+            invalid_user=failed.group("invalid") is not None,
+        )
+
+    accepted = ACCEPTED_RE.search(line)
+    if accepted:
+        return AuthEvent(
+            timestamp=accepted.group("timestamp"),
+            outcome="accepted",
+            user=accepted.group("user"),
+            source_ip=accepted.group("ip"),
+            method=accepted.group("method"),
+        )
+
+    return None
+
+
+def parse_events(lines: list[str]) -> list[AuthEvent]:
+    return [event for line in lines if (event := parse_line(line)) is not None]
+
+
+def _risk_for_source(
+    failed_attempts: int,
+    distinct_users: int,
+    invalid_user_attempts: int,
+    failed_threshold: int,
+    spray_threshold: int,
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+
+    if failed_attempts >= failed_threshold:
+        reasons.append(f"failed attempts >= {failed_threshold}")
+    if distinct_users >= spray_threshold:
+        reasons.append(f"distinct targeted users >= {spray_threshold}")
+    if invalid_user_attempts > 0 and failed_attempts >= max(2, failed_threshold // 2):
+        reasons.append("invalid users observed during repeated failures")
+
+    if failed_attempts >= failed_threshold * 2 or distinct_users >= spray_threshold * 2:
+        return "high", reasons
+    if reasons:
+        return "medium", reasons
+    return "low", []
+
+
+def analyze_events(
+    events: list[AuthEvent],
+    failed_threshold: int = 5,
+    spray_threshold: int = 3,
+) -> dict:
     failed_by_ip: Counter[str] = Counter()
     accepted_by_ip: Counter[str] = Counter()
+    invalid_by_ip: Counter[str] = Counter()
     users_by_ip: dict[str, set[str]] = defaultdict(set)
 
-    for line in lines:
-        failed = FAILED_RE.search(line)
-        if failed:
-            ip = failed.group("ip")
-            failed_by_ip[ip] += 1
-            users_by_ip[ip].add(failed.group("user"))
-            continue
+    for event in events:
+        users_by_ip[event.source_ip].add(event.user)
+        if event.outcome == "failed":
+            failed_by_ip[event.source_ip] += 1
+            if event.invalid_user:
+                invalid_by_ip[event.source_ip] += 1
+        elif event.outcome == "accepted":
+            accepted_by_ip[event.source_ip] += 1
 
-        accepted = ACCEPTED_RE.search(line)
-        if accepted:
-            ip = accepted.group("ip")
-            accepted_by_ip[ip] += 1
-            users_by_ip[ip].add(accepted.group("user"))
+    suspicious: list[SuspiciousSource] = []
+    for source_ip in sorted(users_by_ip):
+        failed_count = failed_by_ip[source_ip]
+        accepted_count = accepted_by_ip[source_ip]
+        invalid_count = invalid_by_ip[source_ip]
+        targeted_users = sorted(users_by_ip[source_ip])
+        risk, reasons = _risk_for_source(
+            failed_count,
+            len(targeted_users),
+            invalid_count,
+            failed_threshold,
+            spray_threshold,
+        )
+        if risk != "low":
+            suspicious.append(
+                SuspiciousSource(
+                    source_ip=source_ip,
+                    failed_attempts=failed_count,
+                    accepted_logins=accepted_count,
+                    targeted_users=targeted_users,
+                    invalid_user_attempts=invalid_count,
+                    risk=risk,
+                    reasons=reasons,
+                )
+            )
 
-    suspicious = [
-        {
-            "ip": ip,
-            "failed_attempts": count,
-            "users_targeted": sorted(users_by_ip[ip]),
-            "reason": f"failed attempts >= {threshold}",
-        }
-        for ip, count in failed_by_ip.items()
-        if count >= threshold
-    ]
+    suspicious.sort(key=lambda item: (item.risk != "high", -item.failed_attempts, item.source_ip))
 
     return {
-        "failed_by_ip": dict(failed_by_ip),
-        "accepted_by_ip": dict(accepted_by_ip),
-        "suspicious": sorted(suspicious, key=lambda item: item["failed_attempts"], reverse=True),
+        "summary": {
+            "events_parsed": len(events),
+            "failed_events": sum(failed_by_ip.values()),
+            "accepted_events": sum(accepted_by_ip.values()),
+            "unique_source_ips": len(users_by_ip),
+            "suspicious_sources": len(suspicious),
+        },
+        "failed_by_ip": dict(sorted(failed_by_ip.items())),
+        "accepted_by_ip": dict(sorted(accepted_by_ip.items())),
+        "suspicious": [asdict(item) for item in suspicious],
     }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Analyze SSH-style authentication logs.")
-    parser.add_argument("log_file", type=Path)
-    parser.add_argument("--threshold", type=int, default=5, help="Failed-login threshold for suspicious IPs.")
-    args = parser.parse_args()
+def analyze_lines(lines: list[str], failed_threshold: int = 5, spray_threshold: int = 3) -> dict:
+    return analyze_events(parse_events(lines), failed_threshold=failed_threshold, spray_threshold=spray_threshold)
 
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Analyze SSH-style authentication logs for suspicious login patterns.")
+    parser.add_argument("log_file", type=Path)
+    parser.add_argument("--failed-threshold", type=int, default=5)
+    parser.add_argument("--spray-threshold", type=int, default=3)
+    parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     lines = args.log_file.read_text(encoding="utf-8").splitlines()
-    report = parse_auth_log(lines, threshold=args.threshold)
-    print(json.dumps(report, indent=2, sort_keys=True))
+    report = analyze_lines(lines, failed_threshold=args.failed_threshold, spray_threshold=args.spray_threshold)
+    print(json.dumps(report, indent=2 if args.pretty else None, sort_keys=True))
     return 0
 
 
