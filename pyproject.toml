@@ -1,9 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "auth-log-analyzer"
-version = "1.0.0"
-description = "Defensive SSH-style authentication log analyzer."
+name = "z3x-auth-log-analyzer"
+version = "0.1.0"
+description = "Deterministic OpenSSH authentication-log analysis for SOC learning and analyst workflows."
+readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+license = { file = "LICENSE" }
+authors = [
+  { name = "Zaid Hijazi" }
+]
+keywords = ["cybersecurity", "soc", "blue-team", "openssh", "log-analysis", "threat-detection"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Information Technology",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
+]
+
+[project.urls]
+Homepage = "https://github.com/Z3X-1337/auth-log-analyzer"
+Repository = "https://github.com/Z3X-1337/auth-log-analyzer"
+Issues = "https://github.com/Z3X-1337/auth-log-analyzer/issues"
+Changelog = "https://github.com/Z3X-1337/auth-log-analyzer/blob/main/CHANGELOG.md"
+
+[project.scripts]
+auth-log-analyzer = "auth_log_analyzer:main"
+
+[tool.setuptools]
+py-modules = ["auth_log_analyzer"]
 
 [tool.pytest.ini_options]
 python_files = ["test_*.py"]
