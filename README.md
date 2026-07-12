@@ -1,6 +1,11 @@
 # Auth Log Analyzer
 
-Auth Log Analyzer is a defensive Python command-line utility for reviewing supported OpenSSH authentication events and identifying suspicious login behavior.
+[![tests](https://github.com/Z3X-1337/auth-log-analyzer/actions/workflows/tests.yml/badge.svg)](https://github.com/Z3X-1337/auth-log-analyzer/actions/workflows/tests.yml)
+![Python](https://img.shields.io/badge/Python-3.10--3.12-blue)
+![Version](https://img.shields.io/badge/version-0.1.0-informational)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+Auth Log Analyzer is a deterministic Python command-line utility for reviewing supported OpenSSH authentication events and identifying suspicious login behavior.
 
 It is designed for SOC learning labs, sanitized incident-analysis exercises, and explainable detection engineering. It is not a replacement for a SIEM, EDR, or analyst validation.
 
@@ -24,12 +29,38 @@ It is designed for SOC learning labs, sanitized incident-analysis exercises, and
   - `T1110.003` — Password Spraying when multiple accounts are targeted.
 - Explicit limitations requiring analyst review.
 
+## Installation
+
+Install from a local clone:
+
+```bash
+python -m pip install .
+```
+
+For an isolated CLI installation:
+
+```bash
+pipx install .
+```
+
+The installed command is:
+
+```bash
+auth-log-analyzer --help
+```
+
 ## Usage
 
 ```bash
+auth-log-analyzer sample_auth.log --pretty
+auth-log-analyzer sample_auth.log --failed-threshold 3 --spray-threshold 4 --pretty
+auth-log-analyzer sample_auth.log --format markdown
+```
+
+The source-file form remains supported:
+
+```bash
 python auth_log_analyzer.py sample_auth.log --pretty
-python auth_log_analyzer.py sample_auth.log --failed-threshold 3 --spray-threshold 4 --pretty
-python auth_log_analyzer.py sample_auth.log --format markdown
 ```
 
 ## Example Summary
@@ -52,7 +83,15 @@ python -m unittest -v
 
 The current suite contains 12 unit and CLI tests covering parsing, IPv6, authentication methods, threshold validation, risk classification, ATT&CK mapping, JSON output, and Markdown output.
 
-GitHub Actions runs the test suite against Python 3.10, 3.11, and 3.12 on pushes and pull requests.
+GitHub Actions tests Python 3.10, 3.11, and 3.12, installs the package, and verifies the CLI entry point.
+
+## Project Governance
+
+- [Changelog](CHANGELOG.md)
+- [Roadmap](ROADMAP.md)
+- [MIT License](LICENSE)
+
+The current package version is `0.1.0` and follows Semantic Versioning.
 
 ## Limitations
 
